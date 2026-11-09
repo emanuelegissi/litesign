@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.coverage
+assets/*
+!assets/README.md
+!assets/icon.png
+*-signed*
+*.p7m

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Installed by LiteSign; the installer fills in the absolute runner path.
+exec @NAUTILUS_RUNNER@ cades "$@"

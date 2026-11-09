@@ -1,0 +1,4 @@
+pyHanko[pkcs11]>=0.38.1,<0.39
+Pillow>=10.1
+keyring>=25.7,<26
+tomlkit>=0.13,<1
