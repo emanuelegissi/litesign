@@ -766,7 +766,7 @@ def stamp_art(font, icon, stamp, name, date):
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle(
         (0, 0, width - 1, height - 1), radius=5 * scale,
-        fill="white", outline="#abb2b9", width=2,
+        fill=None, outline="#abb2b9", width=2,
     )
     if icon:
         image.alpha_composite(icon, ((text_x - icon.width) // 2, (height - icon.height) // 2))
@@ -798,18 +798,63 @@ def prepare_stamp(stamp):
 
 
 def sign_pdf(source, destination, signer, stamp, font, icon):
+    from pyhanko.pdf_utils.misc import PdfReadError
+    from pyhanko.pdf_utils.reader import PdfFileReader
+
+    with open_output(destination, source) as output:
+        try:
+            _sign_pdf(source, output, signer, stamp, font, icon)
+            return
+        except PdfReadError:
+            # Metadata may fail lazily, after the signature fields were read.
+            source.seek(0)
+            try:
+                signatures = PdfFileReader(source, strict=False).embedded_signatures
+            except Exception as error:
+                raise FileError("Cannot rasterize PDF: unable to check for existing signatures.") from error
+            if signatures:
+                raise FileError("Cannot rasterize PDF: existing signatures would be lost.")
+
+        executable = shutil.which("gs")
+        if not executable:
+            raise FileError("Cannot recover malformed PDF: install Ghostscript (gs) for rasterization.")
+        feedback(f"{destination.name}: PDF parsing failed; rasterizing before signing. "
+                 "Searchable text and interactive features will not be preserved.", file=sys.stderr)
+        with tempfile.TemporaryDirectory(prefix="litesign-raster-") as directory:
+            original = Path(directory) / "input.pdf"
+            raster = Path(directory) / "raster.pdf"
+            source.seek(0)
+            with original.open("wb") as copy:
+                shutil.copyfileobj(source, copy)
+            try:
+                result = subprocess.run(
+                    [executable, "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=pdfimage24",
+                     "-r300", "-sCompression=Flate", f"-sOutputFile={raster}", "-f", str(original)],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=120, check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                raise FileError("Ghostscript rasterization failed or timed out.") from error
+            if result.returncode or not raster.is_file():
+                raise FileError("Ghostscript could not rasterize the PDF.")
+            output.seek(0)
+            output.truncate()
+            with raster.open("rb") as converted:
+                try:
+                    _sign_pdf(converted, output, signer, stamp, font, icon)
+                except PdfReadError as error:
+                    raise FileError("Cannot read the rasterized PDF.") from error
+
+
+def _sign_pdf(source, output, signer, stamp, font, icon):
     from pyhanko.pdf_utils.images import PdfImage
     from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
     from pyhanko.pdf_utils.layout import AxisAlignment, BoxConstraints, Margins, SimpleBoxLayoutRule
-    from pyhanko.pdf_utils.misc import PdfError
     from pyhanko.sign.fields import FieldMDPAction, MDPPerm, SigFieldSpec, SigSeedSubFilter
     from pyhanko.sign.signers import PdfSignatureMetadata, PdfSigner
     from pyhanko.stamp import StaticStampStyle
 
-    try:
-        writer = IncrementalPdfFileWriter(source, strict=False)
-    except PdfError as error:
-        raise FileError(f"Cannot read PDF: {error}") from error
+    writer = IncrementalPdfFileWriter(source, strict=False)
     for previous in writer.prev.embedded_signatures:
         lock = previous.fieldmdp
         if previous.docmdp_level == MDPPerm.NO_CHANGES or (
@@ -840,8 +885,7 @@ def sign_pdf(source, destination, signer, stamp, font, icon):
     )
     pdf_signer = PdfSigner(metadata, signer, stamp_style=style,
                            new_field_spec=SigFieldSpec(field, on_page=page_index, box=box))
-    with open_output(destination, source) as output:
-        pdf_signer.sign_pdf(writer, output=output)
+    pdf_signer.sign_pdf(writer, output=output)
 
 
 def cosign_digest(source):

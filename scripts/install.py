@@ -130,7 +130,7 @@ def choose_module(config):
 def build_release(release):
     # The venv stays at this permanent path: moving a venv breaks its shebangs.
     release.mkdir(parents=True)
-    for name in ('litesign.py', 'requirements.txt', 'requirements-install.txt', 'README.md',
+    for name in ('litesign.py', 'requirements.txt', 'README.md',
                  'LICENSE', 'install.sh', 'uninstall.sh'):
         shutil.copy2(SOURCE / name, release / name)
     (release / 'assets').mkdir()
@@ -138,7 +138,7 @@ def build_release(release):
     shutil.copytree(SOURCE / 'scripts', release / 'scripts', ignore=shutil.ignore_patterns('__pycache__'))
     subprocess.run([sys.executable, '-m', 'venv', str(release / '.venv')], check=True)
     python = release / '.venv/bin/python'
-    subprocess.run([str(python), '-m', 'pip', 'install', '-r', str(release / 'requirements-install.txt')], check=True)
+    subprocess.run([str(python), '-m', 'pip', 'install', '-r', str(release / 'requirements.txt')], check=True)
     subprocess.run([str(python), '-c', 'import asn1crypto, pyhanko, pkcs11, PIL, keyring, tomlkit'], check=True)
     return python
 
@@ -163,11 +163,12 @@ def check_tools():
     for name in ('bash',):
         if not shutil.which(name):
             raise RuntimeError(f'Required command not found: {name}')
-    for name in ('systemd-ask-password', 'notify-send', 'openssl'):
+    for name in ('systemd-ask-password', 'notify-send', 'openssl', 'gs'):
         if not shutil.which(name):
             print(f'Warning: {name} is not installed.', file=sys.stderr)
     print('CAdES requires OpenSSL 3 and pkcs11-provider. Install system packages with your distribution tools.')
     print('Nautilus PIN entry requires systemd 257+ and a running per-user password agent.')
+    print('PDF raster recovery requires Ghostscript (gs).')
 
 
 def install(layout):

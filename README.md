@@ -34,7 +34,7 @@ dependencies, and installs these files (respecting absolute XDG overrides):
 The installed CLI is `litesign`; add `~/.local/bin` to your shell's `PATH` if
 necessary. The application is copied into its own installation, so the original
 project folder is not required afterward. Vendor middleware is not copied.
-TOMLKit is an installer-only dependency used to preserve configuration formatting.
+TOMLKit is included in `requirements.txt` and preserves configuration formatting during installation.
 
 Reinstalling builds a new virtual environment at its permanent path before
 switching the launcher. Failed setup leaves the previous installation usable.
@@ -121,6 +121,16 @@ algorithm.
 PAdES uses the basic B-B profile. CAdES uses OpenSSL's `-cades` signed
 certificate attribute. Trusted timestamps and long-term validation are
 outside the scope of this release.
+
+If PAdES processing encounters a PDF parsing error, LiteSign automatically tries
+once to rasterize the document with Ghostscript (`gs`) and sign the resulting PDF
+with the same stamp settings. Install Ghostscript with your distribution's package
+manager to enable this fallback. Pages become 300 dpi color images with lossless
+compression; searchable text and interactive features are lost, and file size may
+increase. LiteSign reports the conversion in its usual feedback. The original is
+unchanged and temporary conversion files are removed. Conversion stops after
+120 seconds. Already-signed PDFs, or PDFs whose signatures cannot be checked,
+are not rasterized. Other errors do not trigger conversion.
 
 ## Nautilus scripts
 
@@ -404,7 +414,7 @@ failures use generic messages to avoid exposing credentials in diagnostics.
 ## Tests
 
 ```sh
-python -m pip install pytest -r requirements-install.txt
+python -m pip install pytest -r requirements.txt
 python -m pytest
 ```
 

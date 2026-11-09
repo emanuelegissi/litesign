@@ -201,7 +201,7 @@ def test_stamp_line_order_and_labels(tmp_path, monkeypatch, reason, location, ex
     assert drawn == expected
 
 
-def test_rounded_stamp_has_transparent_corners(tmp_path):
+def test_rounded_stamp_has_transparent_background(tmp_path):
     _, stamp = ls.load_config(tmp_path / "config.toml", "pades")
     font, icon = ls.prepare_stamp(stamp)
     image = ls.stamp_art(font, icon, stamp, "René Rossi", "2026-11-06 12:30 CET")
@@ -209,7 +209,7 @@ def test_rounded_stamp_has_transparent_corners(tmp_path):
     for point in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
         assert image.getpixel(point)[3] == 0
     assert image.getpixel((width // 2, 0)) == (171, 178, 185, 255)
-    assert image.getpixel((width // 2, 5)) == (255, 255, 255, 255)
+    assert image.getpixel((width // 2, 5))[3] == 0
 
 
 @pytest.mark.parametrize("existing_output", [False, True])
