@@ -21,6 +21,7 @@ spec.loader.exec_module(installer)
 def installation(tmp_path, monkeypatch):
     home = tmp_path / "user's home"
     home.mkdir()
+    monkeypatch.setenv('HOME', str(home))
     monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
     monkeypatch.setenv('XDG_DATA_HOME', str(home / 'data'))
     monkeypatch.setenv('XDG_CONFIG_HOME', str(home / 'config'))
@@ -65,134 +66,156 @@ def test_install_creates_runnable_launcher_scripts_and_configuration(installatio
     assert config['smartcard']['remember-pin'] is True
     assert env.layout.config.stat().st_mode & 0o777 == 0o600
     assert 'Smartcard PKCS#11 module' in env.prompts[0]
-    record = installer.load_manifest(env.layout)
-    assert set(record['files']) == {'launcher', *installer.NAMES}
-    assert not (env.layout.current / 'assets/mu_linux').exists()
+    assert (env.layout.root / 'litesign.py').is_file()
+    assert (env.layout.root / '.venv/bin/python').is_file()
+    assert not (env.layout.root / 'assets/mu_linux').exists()
     for path in env.layout.files.values():
         assert path.stat().st_mode & 0o777 == 0o755
     result = env.real_run([str(env.layout.files['launcher']), '--help'], capture_output=True, text=True)
     assert result.returncode == 0
     assert '--no-prompt' in result.stdout
-    assert env.layout.current.is_symlink()
+    for name in ('current', 'releases', 'install.json'):
+        assert not (env.layout.root / name).exists()
+
+
+def test_reinstall_fully_replaces_application_and_launchers(installation):
+    env = installation
+    installer.install(env.layout)
+    stale = env.layout.root / 'stale/nested/file'
+    stale.parent.mkdir(parents=True)
+    stale.write_text('obsolete application data')
+    (env.layout.root / '.venv/stale-package').touch()
+    (env.layout.root / 'litesign.py').write_text('modified application')
+    (env.layout.root / 'assets/icon.png').write_bytes(b'modified icon')
+    for path in env.layout.files.values():
+        path.write_text('modified launcher')
+    installer.install(env.layout)
+    assert not (env.layout.root / 'stale').exists()
+    assert not (env.layout.root / '.venv/stale-package').exists()
+    for name in ('litesign.py', 'assets/icon.png'):
+        assert (env.layout.root / name).read_bytes() == (installer.SOURCE / name).read_bytes()
+    for path in env.layout.files.values():
+        assert path.read_text().startswith('#!/usr/bin/env bash')
+    result = env.real_run([str(env.layout.files['launcher']), '--help'], capture_output=True, text=True)
+    assert result.returncode == 0
 
 
 def test_reinstall_preserves_settings_comments_and_defaults_existing_module(installation):
     env = installation
     installer.install(env.layout)
-    previous = os.readlink(env.layout.current)
     config = env.layout.config.read_text().replace('remember-pin = true', 'remember-pin = false # keep this')
     config = '# Custom settings\n' + config.replace('Digitally signed', 'Firmato digitalmente')
     env.layout.config.write_text(config)
+    env.layout.config.chmod(0o640)
     env.answer[0] = ''
     installer.install(env.layout)
     assert str(env.module) in env.prompts[-1]
     assert env.layout.config.read_text() == config
-    assert os.readlink(env.layout.current) != previous
-    assert len(installer.load_manifest(env.layout)['releases']) == 2
+    assert env.layout.config.stat().st_mode & 0o777 == 0o640
 
 
 @pytest.mark.parametrize('existing', [False, True])
-def test_failed_dependency_install_keeps_previous_installation(installation, monkeypatch, existing):
+def test_failed_dependency_install_reports_failure_and_can_be_retried(installation, monkeypatch, capsys, existing):
     env = installation
     if existing:
         installer.install(env.layout)
-    before = {path: installer.snapshot(path) for path in [env.layout.config, *env.layout.files.values()]}
-    old_manifest = env.layout.manifest.read_bytes() if existing else None
-    old_link = os.readlink(env.layout.current) if existing else None
-    real_build = installer.build_release
+        (env.layout.root / 'obsolete').touch()
+    config = installer.snapshot(env.layout.config)
+    run = installer.subprocess.run
 
-    def fail(release):
-        real_build(release)
-        raise subprocess.CalledProcessError(1, ['pip', 'install'])
+    def fail(command, **kwargs):
+        if command[1:4] == ['-m', 'pip', 'install']:
+            raise subprocess.CalledProcessError(1, command)
+        return run(command, **kwargs)
 
-    monkeypatch.setattr(installer, 'build_release', fail)
-    with pytest.raises(subprocess.CalledProcessError):
+    monkeypatch.setattr(installer.subprocess, 'run', fail)
+    monkeypatch.setattr(installer, 'Layout', lambda: env.layout)
+    monkeypatch.setattr(installer.os, 'geteuid', lambda: 1000)
+    monkeypatch.setattr(sys, 'argv', ['install.py', 'install'])
+    assert installer.main() == 1
+    assert 'LiteSign install failed' in capsys.readouterr().err
+    assert installer.snapshot(env.layout.config) == config
+    assert not (env.layout.root / 'obsolete').exists()
+    monkeypatch.setattr(installer.subprocess, 'run', run)
+    assert installer.main() == 0
+    result = env.real_run([str(env.layout.files['launcher']), '--help'], capture_output=True, text=True)
+    assert result.returncode == 0
+
+
+@pytest.mark.parametrize('action', ['install', 'uninstall'])
+def test_application_directory_symlink_is_refused(installation, action):
+    env = installation
+    target = env.home / 'unrelated'
+    target.mkdir()
+    keep = target / 'keep'
+    keep.write_text('keep')
+    env.layout.root.parent.mkdir(parents=True)
+    env.layout.root.symlink_to(target, target_is_directory=True)
+    with pytest.raises(RuntimeError, match='symlink'):
+        getattr(installer, action)(env.layout)
+    assert keep.read_text() == 'keep'
+
+
+@pytest.mark.parametrize('nested', [False, True])
+def test_install_refuses_source_inside_destination(installation, monkeypatch, nested):
+    env = installation
+    installer.install(env.layout)
+    source = env.layout.root / 'nested' if nested else env.layout.root
+    monkeypatch.setattr(installer, 'SOURCE', source)
+    before = (env.layout.root / 'litesign.py').read_bytes()
+    with pytest.raises(RuntimeError, match='outside the application directory'):
         installer.install(env.layout)
-    assert {path: installer.snapshot(path) for path in before} == before
-    if existing:
-        assert env.layout.manifest.read_bytes() == old_manifest
-        assert os.readlink(env.layout.current) == old_link
-        assert len(list(env.layout.releases.iterdir())) == 1
+    assert (env.layout.root / 'litesign.py').read_bytes() == before
+
+
+@pytest.mark.parametrize('problem', ['source', 'module', 'config_symlink'])
+def test_invalid_inputs_leave_existing_application_intact(installation, monkeypatch, problem):
+    env = installation
+    installer.install(env.layout)
+    before = (env.layout.root / 'litesign.py').read_bytes()
+    if problem == 'source':
+        monkeypatch.setattr(installer, 'SOURCE', env.home / 'missing-source')
+    elif problem == 'module':
+        env.answer[0] = '/missing/module.so'
     else:
-        assert not env.layout.root.exists()
-
-
-@pytest.mark.parametrize('existing', [False, True])
-def test_failed_commit_rolls_back_files_config_and_current_link(installation, monkeypatch, existing):
-    env = installation
-    if existing:
-        installer.install(env.layout)
-    before = {path: installer.snapshot(path) for path in [env.layout.config, *env.layout.files.values()]}
-    old_record = installer.load_manifest(env.layout) if existing else None
-    publish = installer.publish
-
-    def fail(path, *args):
-        if path == env.layout.manifest:
-            raise OSError('Cannot publish manifest')
-        return publish(path, *args)
-
-    monkeypatch.setattr(installer, 'publish', fail)
-    with pytest.raises(OSError, match='manifest'):
-        installer.install(env.layout)
-    assert {path: installer.snapshot(path) for path in before} == before
-    if existing:
-        assert installer.load_manifest(env.layout) == old_record
-        assert os.readlink(env.layout.current) == 'releases/' + old_record['current']
-    else:
-        assert not env.layout.root.exists()
-
-
-@pytest.mark.parametrize('kind', ['script', 'launcher', 'app_directory', 'config_symlink'])
-def test_installer_refuses_unowned_paths(installation, kind):
-    env = installation
-    if kind == 'app_directory':
-        env.layout.root.mkdir(parents=True)
-    elif kind == 'config_symlink':
-        env.layout.config.parent.mkdir(parents=True)
+        env.layout.config.unlink()
         env.layout.config.symlink_to(env.module)
-    else:
-        path = env.layout.files['Sign as pdf' if kind == 'script' else 'launcher']
-        path.parent.mkdir(parents=True)
-        path.write_text('unrelated file')
     with pytest.raises(RuntimeError):
         installer.install(env.layout)
-    assert not env.layout.manifest.exists()
+    assert (env.layout.root / 'litesign.py').read_bytes() == before
 
 
 def test_config_modified_during_build_is_not_overwritten(installation, monkeypatch):
     env = installation
     installer.install(env.layout)
-    original_build = installer.build_release
+    original_build = installer.build_application
     config = env.layout.config.read_text() + '\n# concurrent edit\n'
 
-    def edit(release):
-        python = original_build(release)
+    def edit(root):
+        python = original_build(root)
         env.layout.config.write_text(config)
         return python
 
-    monkeypatch.setattr(installer, 'build_release', edit)
+    monkeypatch.setattr(installer, 'build_application', edit)
     with pytest.raises(RuntimeError, match='changed during installation'):
         installer.install(env.layout)
     assert env.layout.config.read_text() == config
 
 
-def test_uninstall_keeps_config_documents_and_modified_scripts(installation):
+def test_uninstall_removes_managed_files_and_preserves_user_data(installation):
     env = installation
-    installer.install(env.layout)
     installer.install(env.layout)
     config = env.layout.config.read_bytes()
     document = env.home / 'document-signed.pdf'
     document.write_bytes(b'keep document')
     unrelated = env.layout.files['Extract p7m'].parent / 'Unrelated script'
     unrelated.write_text('keep unrelated')
-    modified = env.layout.files['Sign as pdf']
-    modified.write_text('user modification')
-    installer.uninstall(env.layout)
+    env.layout.files['Sign as pdf'].write_text('user modification')
+    # The installed uninstaller must also work while deleting its own directory.
+    result = env.real_run(['bash', str(env.layout.root / 'uninstall.sh')], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
     assert not env.layout.root.exists()
-    assert not env.layout.files['launcher'].exists()
-    assert not env.layout.files['Sign as p7m'].exists()
-    assert not env.layout.files['Extract p7m'].exists()
-    assert modified.read_text() == 'user modification'
+    assert all(not path.exists() for path in env.layout.files.values())
     assert env.layout.config.read_bytes() == config
     assert unrelated.read_text() == 'keep unrelated'
     assert document.read_bytes() == b'keep document'
@@ -207,7 +230,7 @@ def test_uninstall_keeps_config_documents_and_modified_scripts(installation):
 def test_nautilus_passes_selection_as_one_batch_without_shell_expansion(installation, name, expected):
     env = installation
     installer.install(env.layout)
-    app = env.layout.current / 'litesign.py'
+    app = env.layout.root / 'litesign.py'
     app.write_text('import json, sys\nprint(json.dumps(sys.argv[1:]))\n')
     selection = ['two words.pdf', "apostrophe's.pdf", 'a\nnewline.pdf', '-leading.pdf',
                  '$(touch NOT_CREATED).pdf', 'résumé.pdf', '*.pdf']

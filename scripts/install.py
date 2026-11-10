@@ -7,23 +7,20 @@ if sys.version_info < (3, 11):
     raise SystemExit("LiteSign installation requires Python 3.11 or later.")
 
 import argparse
-import hashlib
-import json
 import os
 from pathlib import Path
-import re
 import shlex
 import shutil
 import stat
 import subprocess
 import tempfile
 import tomllib
-from uuid import uuid4
 
 
 NAMES = ('Sign as pdf', 'Sign as p7m', 'Extract p7m')
-APP_ID = 'litesign-user-install-v1'
 SOURCE = Path(__file__).resolve().parent.parent
+APP_FILES = ('litesign.py', 'requirements.txt', 'README.md',
+             'LICENSE', 'install.sh', 'uninstall.sh')
 
 
 def xdg_path(name, default):
@@ -37,15 +34,8 @@ class Layout:
         config = xdg_path('XDG_CONFIG_HOME', Path.home() / '.config')
         self.root = data / 'litesign'
         self.config = config / 'litesign/config.toml'
-        self.manifest = self.root / 'install.json'
-        self.current = self.root / 'current'
-        self.releases = self.root / 'releases'
         self.files = {'launcher': Path.home() / '.local/bin/litesign'}
         self.files.update({name: data / 'nautilus/scripts' / name for name in NAMES})
-
-
-def digest(content):
-    return hashlib.sha256(content).hexdigest()
 
 
 def snapshot(path):
@@ -76,33 +66,11 @@ def publish(path, content, mode=0o600):
             temporary.unlink(missing_ok=True)
 
 
-def load_manifest(layout):
-    if layout.root.is_symlink() or layout.releases.is_symlink():
+def check_root(root):
+    if root.is_symlink():
         raise RuntimeError('The LiteSign application directory must not be a symlink.')
-    if not layout.root.exists():
-        return None
-    stored = snapshot(layout.manifest)
-    if stored is None:
-        raise RuntimeError(f'Refusing an unowned application directory: {layout.root}')
-    record = json.loads(stored[0])
-    releases = record.get('releases', [])
-    if (record.get('application') != APP_ID or not releases or
-            any(not isinstance(name, str) or not re.fullmatch(r'[0-9a-f]{32}', name) for name in releases) or
-            record.get('current') not in releases or set(record.get('files', {})) != set(layout.files)):
-        raise RuntimeError('Invalid LiteSign installation manifest.')
-    return record
-
-
-def check_destinations(layout, record):
-    for name, path in layout.files.items():
-        existing = snapshot(path)
-        if existing is not None and (record is None or digest(existing[0]) != record['files'][name]):
-            raise RuntimeError(f'Refusing to replace an unrelated or modified file: {path}')
-    if layout.current.is_symlink():
-        if record is None or os.readlink(layout.current) != 'releases/' + record['current']:
-            raise RuntimeError('The installed current link has been modified.')
-    elif layout.current.exists():
-        raise RuntimeError('The installed current path is not a managed symlink.')
+    if root.exists() and not root.is_dir():
+        raise RuntimeError(f'Expected an application directory: {root}')
 
 
 def choose_module(config):
@@ -127,18 +95,17 @@ def choose_module(config):
     return module, existing
 
 
-def build_release(release):
-    # The venv stays at this permanent path: moving a venv breaks its shebangs.
-    release.mkdir(parents=True)
-    for name in ('litesign.py', 'requirements.txt', 'README.md',
-                 'LICENSE', 'install.sh', 'uninstall.sh'):
-        shutil.copy2(SOURCE / name, release / name)
-    (release / 'assets').mkdir()
-    shutil.copy2(SOURCE / 'assets/icon.png', release / 'assets/icon.png')
-    shutil.copytree(SOURCE / 'scripts', release / 'scripts', ignore=shutil.ignore_patterns('__pycache__'))
-    subprocess.run([sys.executable, '-m', 'venv', str(release / '.venv')], check=True)
-    python = release / '.venv/bin/python'
-    subprocess.run([str(python), '-m', 'pip', 'install', '-r', str(release / 'requirements.txt')], check=True)
+def build_application(root):
+    # Create the venv at its final path: moving it breaks its shebangs.
+    root.mkdir(parents=True)
+    for name in APP_FILES:
+        shutil.copy2(SOURCE / name, root / name)
+    (root / 'assets').mkdir()
+    shutil.copy2(SOURCE / 'assets/icon.png', root / 'assets/icon.png')
+    shutil.copytree(SOURCE / 'scripts', root / 'scripts', ignore=shutil.ignore_patterns('__pycache__'))
+    subprocess.run([sys.executable, '-m', 'venv', str(root / '.venv')], check=True)
+    python = root / '.venv/bin/python'
+    subprocess.run([str(python), '-m', 'pip', 'install', '-r', str(root / 'requirements.txt')], check=True)
     subprocess.run([str(python), '-c', 'import asn1crypto, pyhanko, pkcs11, PIL, keyring, tomlkit'], check=True)
     return python
 
@@ -171,71 +138,32 @@ def check_tools():
 
 
 def install(layout):
-    record = load_manifest(layout)
-    check_destinations(layout, record)
-    expected = {path: snapshot(path) for path in (*layout.files.values(), layout.manifest)}
+    check_root(layout.root)
+    if SOURCE.resolve().is_relative_to(layout.root.resolve()):
+        raise RuntimeError('Run installation from a source directory outside the application directory.')
+    for name in (*APP_FILES, 'assets/icon.png', 'scripts/install.py', 'scripts/nautilus-run.sh',
+                 *(f'scripts/nautilus/{name}' for name in NAMES)):
+        if not (SOURCE / name).is_file():
+            raise RuntimeError(f'Missing application source file: {SOURCE / name}')
+    for path in layout.files.values():
+        snapshot(path)
     module, old_config = choose_module(layout.config)
     check_tools()
-    release = layout.releases / uuid4().hex
-    written = []
-    link_changed = False
-    old_link = os.readlink(layout.current) if layout.current.is_symlink() else None
-    link_temp = layout.root / ('.current-' + release.name)
-    try:
-        python = build_release(release)
-        config = prepare_config(python, module, old_config)
-        runner = shlex.quote(str(layout.current / 'scripts/nautilus-run.sh'))
-        launcher = ('#!/usr/bin/env bash\n# Installed by LiteSign.\nexec ' +
-                    shlex.quote(str(layout.current / '.venv/bin/python')) + ' ' +
-                    shlex.quote(str(layout.current / 'litesign.py')) + ' "$@"\n').encode()
-        files = {'launcher': launcher}
-        for name in NAMES:
-            template = (release / 'scripts/nautilus' / name).read_text()
-            files[name] = template.replace('@NAUTILUS_RUNNER@', runner).encode()
-        check_destinations(layout, record)
-        if snapshot(layout.config) != old_config:
-            raise RuntimeError('Configuration changed during installation; retry to preserve your edits.')
-        expected[layout.config] = old_config
-        if snapshot(layout.manifest) != expected[layout.manifest]:
-            raise RuntimeError("Another installation changed the manifest; retry.")
-        changes = [(layout.config, config, old_config[1] if old_config else 0o600)]
-        changes.extend((layout.files[name], content, 0o755) for name, content in files.items())
-        manifest = {'application': APP_ID, 'current': release.name,
-                    'releases': (record['releases'] if record else []) + [release.name],
-                    'files': {name: digest(content) for name, content in files.items()}}
-        for path, content, mode in changes:
-            before = snapshot(path)
-            if before != expected[path]:
-                raise RuntimeError(f"File changed during installation: {path}")
-            publish(path, content, mode)
-            written.append((path, before))
-        os.symlink('releases/' + release.name, link_temp)
-        os.replace(link_temp, layout.current)
-        link_changed = True
-        publish(layout.manifest, (json.dumps(manifest, indent=2) + '\n').encode())
-    except BaseException:
-        if link_changed:
-            if old_link is None:
-                layout.current.unlink()
-            else:
-                os.symlink(old_link, link_temp)
-                os.replace(link_temp, layout.current)
-        for path, before in reversed(written):
-            if before is None:
-                path.unlink(missing_ok=True)
-            else:
-                publish(path, *before)
-        if release.exists():
-            shutil.rmtree(release)
-        if record is None:
-            for directory in (layout.releases, layout.root):
-                try:
-                    directory.rmdir()
-                except OSError:
-                    pass
-        raise
-    finally:
-        link_temp.unlink(missing_ok=True)
+    if layout.root.exists():
+        shutil.rmtree(layout.root)
+    python = build_application(layout.root)
+    config = prepare_config(python, module, old_config)
+    runner = shlex.quote(str(layout.root / 'scripts/nautilus-run.sh'))
+    launcher = ('#!/usr/bin/env bash\n# Installed by LiteSign.\nexec ' +
+                shlex.quote(str(python)) + ' ' +
+                shlex.quote(str(layout.root / 'litesign.py')) + ' "$@"\n').encode()
+    if snapshot(layout.config) != old_config:
+        raise RuntimeError('Configuration changed during installation; retry to preserve your edits.')
+    publish(layout.config, config, old_config[1] if old_config else 0o600)
+    publish(layout.files['launcher'], launcher, 0o755)
+    for name in NAMES:
+        template = (layout.root / 'scripts/nautilus' / name).read_text()
+        publish(layout.files[name], template.replace('@NAUTILUS_RUNNER@', runner).encode(), 0o755)
     print(f'Installed: {layout.files["launcher"]}')
     print(f'Configuration: {layout.config}')
     print('Nautilus Scripts: ' + ', '.join(NAMES))
@@ -244,35 +172,11 @@ def install(layout):
 
 
 def uninstall(layout):
-    record = load_manifest(layout)
-    if record is None:
-        print('LiteSign is not installed.')
-        return
-    for name, path in layout.files.items():
-        try:
-            existing = snapshot(path)
-        except RuntimeError:
-            print(f'Keeping modified path: {path}', file=sys.stderr)
-            continue
-        if existing is not None:
-            if digest(existing[0]) == record['files'][name]:
-                path.unlink()
-            else:
-                print(f'Keeping modified file: {path}', file=sys.stderr)
-    if layout.current.is_symlink() and os.readlink(layout.current) == 'releases/' + record['current']:
-        layout.current.unlink()
-    for name in record['releases']:
-        directory = layout.releases / name
-        if directory.is_symlink():
-            print(f'Keeping modified path: {directory}', file=sys.stderr)
-        elif directory.exists():
-            shutil.rmtree(directory)
-    layout.manifest.unlink()
-    for directory in (layout.releases, layout.root):
-        try:
-            directory.rmdir()
-        except OSError:
-            pass
+    check_root(layout.root)
+    if layout.root.exists():
+        shutil.rmtree(layout.root)
+    for path in layout.files.values():
+        path.unlink(missing_ok=True)
     print('LiteSign and its Nautilus scripts were uninstalled.')
     print('Configuration, keyring entries, documents and temporary logs were preserved.')
 

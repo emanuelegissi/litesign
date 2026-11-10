@@ -36,21 +36,26 @@ necessary. The application is copied into its own installation, so the original
 project folder is not required afterward. Vendor middleware is not copied.
 TOMLKit is included in `requirements.txt` and preserves configuration formatting during installation.
 
-Reinstalling builds a new virtual environment at its permanent path before
-switching the launcher. Failed setup leaves the previous installation usable.
-Unrelated or modified launcher/script files are never replaced. Previous
-successful application versions are retained until uninstall.
+Reinstalling removes the entire application directory and copies the current
+application into it, then recreates its virtual environment. No previous versions
+or backups are retained. Run installation from a source directory outside the
+application directory. If installation fails after replacement begins, LiteSign
+may be unavailable until you rerun the installer successfully.
+
+The application directory, CLI launcher, and three named Nautilus scripts are
+installer-owned: reinstalling replaces local edits to these files. Configuration
+and saved keyring PINs are preserved. Absolute XDG overrides remain supported.
 
 To uninstall, run either the project's `./uninstall.sh` or the installed copy:
 
 ```sh
-~/.local/share/litesign/current/uninstall.sh
+~/.local/share/litesign/uninstall.sh
 ```
 
 With a custom `XDG_DATA_HOME`, use the corresponding path instead. Uninstall
-removes the managed application versions, CLI launcher and Nautilus scripts.
-It preserves configuration, keyring entries, documents, temporary logs, unrelated
-scripts and user-modified launcher/script files. No system packages are installed
+removes the entire application directory, CLI launcher and three named Nautilus
+scripts, including local edits. It preserves configuration, keyring entries,
+documents, temporary logs and unrelated scripts. No system packages are installed
 or removed by these scripts.
 
 For development without installation:
@@ -420,8 +425,8 @@ PEM payloads, nested envelopes, malformed inputs, and refusal to overwrite files
 including concurrent destination creation. Desktop tests mock terminal prompts and
 notification utilities; they do not display real prompts or notifications.
 Installer tests use isolated directories and simulated package installation;
-they cover rollback, configuration preservation, uninstall ownership and exact
-Nautilus filename handling.
+they cover complete application replacement, configuration preservation, failed
+installation and retry, uninstall, and exact Nautilus filename handling.
 
 For physical-card acceptance, sign a PDF twice, sign a binary file in CAdES,
 and co-sign the resulting envelope. Verify the outputs with your usual
