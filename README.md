@@ -74,8 +74,7 @@ directory, point `OPENSSL_MODULES` to the directory containing its `pkcs11.so`.
 
 ## Use
 
-For signing, insert the smart card. Running from a terminal works without a
-graphical password agent.
+For signing, insert the smart card and run LiteSign from a terminal.
 
 ```sh
 python litesign.py -- report.pdf annex.pdf
@@ -149,20 +148,17 @@ Select files in a local folder or a mounted location exposed as filesystem
 paths. An empty selection or a remote selection without local paths fails.
 Directories are not processed recursively.
 
-No terminal is opened. The signing scripts use `--agent-only`: when PIN entry
-is required, `systemd-ask-password` must be available with a running per-user
-password agent (systemd 257 or later). LiteSign explicitly requests that agent
-with `--no-tty --user`. Missing helpers, failed/cancelled requests, and timeouts
-stop signing without terminal fallback or automatic retry. An absent agent may
-only be detected when the 90-second request timeout expires. A usable saved
-keyring PIN avoids prompting. The scripts cannot establish agent availability
-merely by finding the helper executable.
+No terminal is opened. The signing scripts use `--no-prompt` and require a
+usable PIN saved in the desktop keyring. First run LiteSign from a terminal
+with `[smartcard].remember-pin = true` and authenticate successfully to save
+the PIN. If the saved PIN is missing, unavailable, or rejected, signing stops
+without prompting; run LiteSign from a terminal to enter and save the PIN again.
+A keyring unlock dialog may still be shown by the desktop keyring service.
 
-Extraction does not need a smartcard, PIN agent, or smartcard configuration.
+Extraction does not need a smartcard, saved PIN, or smartcard configuration.
 Results use LiteSign's notifications and temporary logs, without notification
 actions or automatic file opening. Install `notify-send` and ensure your desktop
 notification service works so feedback is visible when launched from Nautilus.
-Ordinary CLI use retains its terminal PIN fallback unless `--agent-only` is set.
 
 ## Extract P7M content
 
@@ -195,18 +191,14 @@ counts.
 
 ## PIN prompts and desktop feedback
 
-When `systemd-ask-password` is installed, LiteSign uses it for PIN entry with
-input echo disabled and a 90-second timeout. This applies to signing, card
-information, and all three prompts when changing a PIN. Its output is captured
-privately; LiteSign does not enable systemd password caching or use systemd's
-inherited password credentials. The existing Python keyring behavior is unchanged.
+LiteSign uses the terminal password prompt with input echo disabled. This
+applies to signing, card information, and all three prompts when changing a PIN.
+A usable saved keyring PIN avoids prompting for signing and card information.
+Without a terminal, interactive entry fails without reading echoed input.
+Cancellation stops the operation without retrying.
 
-If the command is absent, LiteSign uses the terminal password prompt unless
-`--agent-only` was specified. Once a
-systemd prompt has started, cancellation or failure stops the operation without
-retrying through another prompt. Without a terminal, a compatible password agent
-must be running; installing `systemd-ask-password` alone does not guarantee a
-graphical dialog. Per-user password agents require systemd 257 or later.
+Use `--no-prompt` to require a saved keyring PIN and fail immediately whenever
+credential entry would be needed. Nautilus signing scripts use this option.
 
 When `notify-send` is available, LiteSign sends one final desktop notification
 for signing, extraction, or card management. Terminal stdout/stderr and exit
@@ -219,7 +211,7 @@ Reports longer than 300 characters or four lines are saved to a unique
 usable directory selected by `TMPDIR`). Logs are readable and writable only by
 the current user. The notification shows a short result and the log path; the
 same path is printed to stderr. PINs and their URI-encoded forms are redacted,
-and password-helper output is never included in reports.
+and credential prompts are never included in reports.
 
 There are no notification actions, automatic file openers, or background
 helpers. LiteSign leaves completed logs available for manual inspection and
@@ -425,7 +417,7 @@ partial metadata, and stale-keyring prevention. Physical-card compatibility must
 be checked against the selected middleware; the automated suite cannot establish
 that a particular card supports PIN changes. Extraction tests cover binary and
 PEM payloads, nested envelopes, malformed inputs, and refusal to overwrite files,
-including concurrent destination creation. Desktop tests mock password and
+including concurrent destination creation. Desktop tests mock terminal prompts and
 notification utilities; they do not display real prompts or notifications.
 Installer tests use isolated directories and simulated package installation;
 they cover rollback, configuration preservation, uninstall ownership and exact

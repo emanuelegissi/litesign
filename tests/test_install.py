@@ -72,7 +72,7 @@ def test_install_creates_runnable_launcher_scripts_and_configuration(installatio
         assert path.stat().st_mode & 0o777 == 0o755
     result = env.real_run([str(env.layout.files['launcher']), '--help'], capture_output=True, text=True)
     assert result.returncode == 0
-    assert '--agent-only' in result.stdout
+    assert '--no-prompt' in result.stdout
     assert env.layout.current.is_symlink()
 
 
@@ -200,8 +200,8 @@ def test_uninstall_keeps_config_documents_and_modified_scripts(installation):
 
 
 @pytest.mark.parametrize(('name', 'expected'), [
-    ('Sign as pdf', ['--agent-only', '--format', 'pades']),
-    ('Sign as p7m', ['--agent-only', '--format', 'cades']),
+    ('Sign as pdf', ['--no-prompt', '--format', 'pades']),
+    ('Sign as p7m', ['--no-prompt', '--format', 'cades']),
     ('Extract p7m', ['--extract']),
 ])
 def test_nautilus_passes_selection_as_one_batch_without_shell_expansion(installation, name, expected):

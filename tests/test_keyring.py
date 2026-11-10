@@ -393,8 +393,33 @@ def test_cancelled_keyring_unlock_falls_back_once(batch, memory, monkeypatch):
 
 
 @pytest.mark.parametrize('mode', ['pades', 'cades'])
-def test_agent_only_can_use_saved_pin_without_prompt(batch, memory, monkeypatch, mode):
+def test_no_prompt_can_use_saved_pin(batch, memory, monkeypatch, mode):
     memory.values[batch.key] = PIN
-    monkeypatch.setattr(ls, 'prompt_pin', lambda: pytest.fail('Unexpected password agent request'))
-    assert batch.run(mode, extra=('--agent-only',)) == 0
+    monkeypatch.setattr(ls, 'prompt_pin', lambda: pytest.fail('Unexpected PIN prompt'))
+    assert batch.run(mode, extra=('--no-prompt',)) == 0
     assert ('login', PIN) in batch.events
+
+
+@pytest.mark.parametrize('mode', ['pades', 'cades'])
+@pytest.mark.parametrize('state', ['missing', 'unavailable', 'disabled', 'rejected'])
+def test_no_prompt_stops_without_usable_saved_pin(batch, memory, monkeypatch, capsys, mode, state):
+    monkeypatch.setattr(ls, 'prompt_pin', lambda: ls.prompt_secret('Smart card PIN'))
+    monkeypatch.setattr(ls, 'getpass', lambda *args: pytest.fail('Unexpected terminal prompt'))
+    if state != 'missing':
+        memory.values[batch.key] = OLD_PIN
+    if state == 'unavailable':
+        def locked(*args):
+            raise keyring.errors.KeyringLocked('Unavailable')
+        monkeypatch.setattr(memory, 'get_password', locked)
+    elif state == 'disabled':
+        batch.config.write_text(batch.config.read_text().replace('remember-pin = true', 'remember-pin = false'))
+    elif state == 'rejected':
+        batch.login_error = pkcs11.exceptions.PinIncorrect()
+    assert batch.run(mode, extra=('--no-prompt',)) == 2
+    assert 'sign' not in batch.events
+    logins = [event for event in batch.events if isinstance(event, tuple) and event[0] == 'login']
+    assert logins == ([('login', OLD_PIN)] if state == 'rejected' else [])
+    if state != 'rejected':
+        captured = capsys.readouterr()
+        assert 'No usable saved PIN' in captured.out + captured.err
+    assert ls._no_prompt.get() is False

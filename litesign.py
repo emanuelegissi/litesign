@@ -81,7 +81,7 @@ def diagnostic(error, pin):
 
 
 _current_feedback = ContextVar("litesign_feedback", default=None)
-_agent_only = ContextVar("litesign_agent_only", default=False)
+_no_prompt = ContextVar("litesign_no_prompt", default=False)
 
 
 class UserFeedback:
@@ -97,7 +97,7 @@ class UserFeedback:
 
 
 def feedback(*values, sep=" ", end="\n", **kwargs):
-    # Capture only application messages, never password-helper output or prompts.
+    # Capture only application messages, never credential prompts.
     print(*values, sep=sep, end=end, **kwargs)
     current = _current_feedback.get()
     if current is not None:
@@ -256,46 +256,14 @@ def open_output(path, source, *, replace_existing=True):
 
 
 def prompt_secret(label):
-    executable = shutil.which("systemd-ask-password")
-    agent_only = _agent_only.get()
-    if agent_only and not executable:
-        raise SetupError("systemd-ask-password is required for agent-only PIN entry.")
-    pin = None
-    if executable:
-        env = dict(os.environ)
-        # Do not let systemd's default "password" credential replace a fresh prompt.
-        env.pop("CREDENTIALS_DIRECTORY", None)
-        try:
-            result = subprocess.run(
-                [executable, "--echo=no", "--timeout=90",
-                 *(["--no-tty", "--user"] if agent_only else []), "--", label + ":"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=95, check=False,
-            )
-        except FileNotFoundError:
-            if agent_only:
-                raise SetupError("systemd-ask-password is required for agent-only PIN entry.") from None
-            pass  # The helper disappeared after discovery; use the terminal.
-        except subprocess.TimeoutExpired:
-            raise SetupError("Credential prompt timed out.") from None
-        except OSError:
-            raise SetupError("Could not start the credential prompt.") from None
-        else:
-            if result.returncode:
-                raise SetupError("Password agent unavailable, cancelled or failed." if agent_only else
-                                 "Credential prompt cancelled or failed.")
-            try:
-                pin = result.stdout.removesuffix(b"\n").decode("utf-8")
-            except UnicodeError:
-                raise SetupError("Credential prompt returned an invalid response.") from None
-            if "\n" in pin or "\r" in pin:
-                raise SetupError("Credential prompt returned an invalid response.")
-    if pin is None:
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("error", GetPassWarning)
-                pin = getpass(label + ": ")
-        except (EOFError, GetPassWarning) as error:
-            raise SetupError("A terminal is required to enter credentials.") from error
+    if _no_prompt.get():
+        raise SetupError("No usable saved PIN. Run LiteSign in a terminal to enter and save the PIN.")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", GetPassWarning)
+            pin = getpass(label + ": ")
+    except (EOFError, GetPassWarning) as error:
+        raise SetupError("A terminal is required to enter credentials.") from error
     if not pin:
         raise SetupError("No credential entered.")
     return remember_secret(pin)
@@ -1323,17 +1291,17 @@ def run_cli(argv=None):
     ):
         actions.add_argument("--" + flag, action="store_true", help=help_text)
     parser.add_argument("--slot", type=int, help="PKCS#11 slot ID for card management")
-    parser.add_argument("--agent-only", action="store_true",
-                        help="require a per-user password agent for PIN prompts; never use the terminal")
+    parser.add_argument("--no-prompt", action="store_true",
+                        help="require a saved keyring PIN; never prompt for credentials")
     parser.add_argument("--no-keyring", action="store_true",
                         help="do not read or save PINs in the keyring")
     parser.add_argument("paths", nargs="*", type=Path, metavar="FILE")
     args = parser.parse_args(argv)
-    _agent_only.set(args.agent_only)
-    if args.agent_only and args.forget_pin:
-        parser.error("--agent-only cannot be combined with --forget-pin")
+    _no_prompt.set(args.no_prompt)
+    if args.no_prompt and args.forget_pin:
+        parser.error("--no-prompt cannot be combined with --forget-pin")
     if args.extract:
-        for option in ("format", "stamp_page", "stamp_position", "slot", "no_keyring", "agent_only"):
+        for option in ("format", "stamp_page", "stamp_position", "slot", "no_keyring", "no_prompt"):
             if getattr(args, option) is not None and getattr(args, option) is not False:
                 parser.error(f"--{option.replace('_', '-')} cannot be combined with --extract")
         if not args.paths:
@@ -1360,7 +1328,7 @@ def run_cli(argv=None):
 def main(argv=None):
     collected = UserFeedback()
     token = _current_feedback.set(collected)
-    agent_token = _agent_only.set(False)
+    prompt_token = _no_prompt.set(False)
     status = None
     try:
         status = run_cli(argv)
@@ -1372,7 +1340,7 @@ def main(argv=None):
         raise
     finally:
         _current_feedback.reset(token)
-        _agent_only.reset(agent_token)
+        _no_prompt.reset(prompt_token)
         if status is not None:
             try:
                 notify_feedback(collected.report(), status)

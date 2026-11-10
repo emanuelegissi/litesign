@@ -12,7 +12,7 @@ if (( $# == 0 )); then
     exit 2
 fi
 case "$mode" in
-    pades|cades) options=(--agent-only --format "$mode") ;;
+    pades|cades) options=(--no-prompt --format "$mode") ;;
     extract) options=(--extract) ;;
     *) printf 'Unknown LiteSign operation: %s\n' "$mode" >&2; exit 2 ;;
 esac

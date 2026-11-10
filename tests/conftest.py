@@ -1,4 +1,4 @@
-"""Keep tests independent of installed desktop utilities and real agents."""
+"""Keep tests independent of installed desktop utilities."""
 import pytest
 
 import litesign as ls
@@ -9,7 +9,7 @@ def isolate_desktop_tools(monkeypatch):
     original = ls.shutil.which
 
     def which(name, *args, **kwargs):
-        if name in ('systemd-ask-password', 'notify-send'):
+        if name == 'notify-send':
             return None
         return original(name, *args, **kwargs)
 

@@ -163,11 +163,10 @@ def check_tools():
     for name in ('bash',):
         if not shutil.which(name):
             raise RuntimeError(f'Required command not found: {name}')
-    for name in ('systemd-ask-password', 'notify-send', 'openssl', 'gs'):
+    for name in ('notify-send', 'openssl', 'gs'):
         if not shutil.which(name):
             print(f'Warning: {name} is not installed.', file=sys.stderr)
     print('CAdES requires OpenSSL 3 and pkcs11-provider. Install system packages with your distribution tools.')
-    print('Nautilus PIN entry requires systemd 257+ and a running per-user password agent.')
     print('PDF raster recovery requires Ghostscript (gs).')
 
 
@@ -240,7 +239,7 @@ def install(layout):
     print(f'Installed: {layout.files["launcher"]}')
     print(f'Configuration: {layout.config}')
     print('Nautilus Scripts: ' + ', '.join(NAMES))
-    print('No terminal is launched. Missing/cancelled/timed-out PIN agents cause failure; saved PINs can avoid prompting.')
+    print('Nautilus signing requires a saved keyring PIN. Run LiteSign in a terminal first to enter and save it.')
     print('Existing configuration settings were preserved. No vendor middleware was installed.')
 
 
